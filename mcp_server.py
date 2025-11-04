@@ -1,72 +1,87 @@
-from typing import Any
-import httpx
-from mcp.server.fastmcp import FastMCP
+# mcp_server.py
+from openai import OpenAI
+from io import BytesIO
+import os
 
-# Initialize FastMCP server
-mcp = FastMCP("Commuting-agent")
-
-def fetch_database():
-    return None
+# ====== Initialize OpenAI client ======
+# You can also set OPENAI_API_KEY as an environment variable
+client = OpenAI(api_key="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")
 
 
-@mcp.tool()
-async def get_unread_emails() -> str:
-    """Get weather alerts for a US state.
+# ====== Fake Call Class for Testing ======
+class FakeCall:
+    def __init__(self, call_id, audio_file):
+        self.id = call_id
+        self.audio_file = audio_file
 
-    Args:
-        state: Two-letter US state code (e.g. CA, NY)
-    """
-    url = f"{NWS_API_BASE}/alerts/active/area/{state}"
-    data = await make_nws_request(url)
+    def stream_audio(self):
+        # Yield audio chunks (here just one chunk from the file)
+        with open(self.audio_file, "rb") as f:
+            yield f.read()
 
-    if not data or "features" not in data:
-        return "Unable to fetch alerts or no alerts found."
+    def play_audio(self, audio_bytes):
+        # Save TTS output locally
+        output_file = f"{self.id}_tts_output.wav"
+        with open(output_file, "wb") as f:
+            f.write(audio_bytes.getbuffer())
+        print(f"TTS audio saved as {output_file}")
 
-    if not data["features"]:
-        return "No active alerts for this state."
 
-    alerts = [format_alert(feature) for feature in data["features"]]
-    return "\n---\n".join(alerts)
+# ====== Speech-to-Text ======
+def speech_to_text(audio_chunk):
+    temp_file = "temp_audio.m4a"
+    with open(temp_file, "wb") as f:
+        f.write(audio_chunk)
 
-@mcp.tool()
-async def generate_email_summary(latitude: float, longitude: float) -> str:
-    """Get weather forecast for a location.
+    transcription = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=open(temp_file, "rb")
+    )
+    os.remove(temp_file)
+    return transcription.text
 
-    Args:
-        latitude: Latitude of the location
-        longitude: Longitude of the location
-    """
-    # First get the forecast grid endpoint
-    points_url = f"{NWS_API_BASE}/points/{latitude},{longitude}"
-    points_data = await make_nws_request(points_url)
 
-    if not points_data:
-        return "Unable to fetch forecast data for this location."
+# ====== LLM Agent Logic ======
+def agent_logic(text_input):
+    if "email" in text_input.lower():
+        return "You have 3 unread emails."
+    elif "schedule" in text_input.lower():
+        return "I can schedule a meeting for you. When do you want it?"
+    else:
+        return "Sorry, I didn't understand that."
 
-    # Get the forecast URL from the points response
-    forecast_url = points_data["properties"]["forecast"]
-    forecast_data = await make_nws_request(forecast_url)
 
-    if not forecast_data:
-        return "Unable to fetch detailed forecast."
+# ====== Text-to-Speech ======
+def text_to_speech(text):
+    audio_resp = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=text
+    )
+    # Convert HttpxBinaryResponseContent to bytes
+    audio_bytes = audio_resp.read()
+    return BytesIO(audio_bytes)
 
-    # Format the periods into a readable forecast
-    periods = forecast_data["properties"]["periods"]
-    forecasts = []
-    for period in periods[:5]:  # Only show next 5 periods
-        forecast = f"""
-{period['name']}:
-Temperature: {period['temperature']}°{period['temperatureUnit']}
-Wind: {period['windSpeed']} {period['windDirection']}
-Forecast: {period['detailedForecast']}
-"""
-        forecasts.append(forecast)
 
-    return "\n---\n".join(forecasts)
+# ====== Call Handler ======
+def handle_incoming_call(call):
+    print("Incoming call:", call.id)
 
-def main():
-    # Initialize and run the server
-    mcp.run(transport='stdio')    
+    text_input = ""
+    for chunk in call.stream_audio():
+        text_input += speech_to_text(chunk)
 
+    print("User said:", text_input)
+
+    ai_response = agent_logic(text_input)
+    print("AI response:", ai_response)
+
+    audio_response = text_to_speech(ai_response)
+    call.play_audio(audio_response)
+
+
+# ====== Main ======
 if __name__ == "__main__":
-    main()
+    # Replace with your test M4A file
+    fake_call = FakeCall("test-call-1", "test2.m4a")
+    handle_incoming_call(fake_call)
