@@ -10,15 +10,18 @@ We want the agent to have the following capabilities :
 
 ## Emails stored in vectored Database
 For now we will assume the emails are already in ApertureData
+
+**✅ Setup Complete!** See [README_SETUP.md](README_SETUP.md) for instructions on setting up ApertureData with sample emails.
+
 ### Tasks
--Generate emails Database, two ways :
-    -Find a Public Emails Database that we can store in ApertureData OR
+- ✅ Generate emails Database with images and attachments (see `setup_aperturedb.py`)
     -Generate Emails with AI
-    -If the integration with apertureData is tough, we can start out with a small databases(Like 10 emails)
+    -✅ Small database with 10 sample emails (7 regular + 3 spam)
 ### Going further
-    -We want the emails to have PDF files attached, videos, mp3s... So that we can leverage the multimodal aspect
-    -We want the database to contain spam emails
-    -We want the emails to have read/unread labels so that our agents only works on unread emails if asked.
+    -✅ Emails have PDF files attached and images - leveraging multimodal aspect
+    -✅ Database contains spam emails (3 spam emails included)
+    -✅ Emails have read/unread labels (is_unread flag in metadata)
+    -📋 TODO: Add videos, mp3s and other attachment types
 
 ## Previous interractions with agent storage
 ### Tasks
