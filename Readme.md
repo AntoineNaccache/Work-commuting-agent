@@ -22,4 +22,18 @@ For now we will assume the emails are already in ApertureData
 
 ## Previous interractions with agent storage
 ### Tasks
+    -Integrate memory with Memverge so that the agent has memory of previously read emails and user interractions
+    -Could help give some context to emails, or upcomming meetings
+## Voice support
+### Task
+    -We want to boot up the conversation with the Agent by giving it a call
+    -We want the agent to reply to us vocally, in the back the agent will need to be ble to call to different MCP Tools (for now the Read8email database tool will be enough)
+
+# Going Further
+
+## Scheduling new meetings, or providing suggestions to new meetings
+    -We want the agent to be able to suggest new meetings based on the emails that were analysed
+    -We want the agent to be able to access the user's schedule, as well as his buisness partners to schedule a meeting on an available time slot
+### Main difficulty
+We need to have a browsing tool so that our agent uses visions to interract with the user's calendar application
 
