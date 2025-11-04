@@ -3,8 +3,10 @@ from openai import OpenAI
 from io import BytesIO
 import os
 
-# Initialize OpenAI client
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY_HERE")
+# ====== Initialize OpenAI client ======
+# You can also set OPENAI_API_KEY as an environment variable
+client = OpenAI(api_key="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")
+
 
 # ====== Fake Call Class for Testing ======
 class FakeCall:
@@ -19,14 +21,14 @@ class FakeCall:
 
     def play_audio(self, audio_bytes):
         # Save TTS output locally
-        with open(f"{self.id}_tts_output.wav", "wb") as f:
+        output_file = f"{self.id}_tts_output.wav"
+        with open(output_file, "wb") as f:
             f.write(audio_bytes.getbuffer())
-        print(f"TTS audio saved as {self.id}_tts_output.wav")
+        print(f"TTS audio saved as {output_file}")
 
 
 # ====== Speech-to-Text ======
 def speech_to_text(audio_chunk):
-    # Save chunk temporarily
     temp_file = "temp_audio.m4a"
     with open(temp_file, "wb") as f:
         f.write(audio_chunk)
@@ -56,7 +58,9 @@ def text_to_speech(text):
         voice="alloy",
         input=text
     )
-    return BytesIO(audio_resp.audio)
+    # Convert HttpxBinaryResponseContent to bytes
+    audio_bytes = audio_resp.read()
+    return BytesIO(audio_bytes)
 
 
 # ====== Call Handler ======
