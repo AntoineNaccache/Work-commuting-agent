@@ -37,3 +37,8 @@ For now we will assume the emails are already in ApertureData
 ### Main difficulty
 We need to have a browsing tool so that our agent uses visions to interract with the user's calendar application
 
+
+# Workflow diagram
+![Workflow Diagram](./workflow.png)
+
+
