@@ -39,6 +39,6 @@ We need to have a browsing tool so that our agent uses visions to interract with
 
 
 # Workflow diagram
-![Workflow Diagram](./workflow.png)
+![Workflow Diagram](./Workflow_diagram.png)
 
 
