@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-FastAPI MCP Server — queries Email entities in ApertureData and summarizes them using OpenAI >=1.0.0
+MCP Server built with FastMCP — queries Email entities in ApertureData and summarizes them with OpenAI.
 """
 
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
 from aperturedb.CommonLibrary import create_connector
+from mcp.server.fastmcp import FastMCP
 import openai
 
-# Load environment variables
+# -------------------------
+# Load env variables
+# -------------------------
 load_dotenv()
 APERTUREDB_KEY = os.getenv("APERTUREDB_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -22,51 +22,34 @@ if not APERTUREDB_KEY:
 if not OPENAI_API_KEY:
     raise RuntimeError("⚠️ Missing OPENAI_API_KEY in .env or environment.")
 
+# Initialize OpenAI client
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-# Initialize FastAPI app
-app = FastAPI(title="ApertureData Email MCP with AI Summary")
+# -------------------------
+# Initialize MCP server
+# -------------------------
+mcp = FastMCP(name="ApertureData Email MCP")
 
-# Helper function to connect to ApertureData
+# -------------------------
+# Helper function
+# -------------------------
 def _connect_db():
     return create_connector(key=APERTUREDB_KEY)
 
-
 # -------------------------
-# Request / Response Models
-# -------------------------
-
-class CheckEmailsRequest(BaseModel):
-    limit: Optional[int] = 10
-
-class CheckEmailsResponse(BaseModel):
-    status: str
-    total_emails: int
-    spam_emails: int
-    unread_emails: int
-    samples: List[str]
-
-class SummarizeEmailsResponse(BaseModel):
-    status: str
-    summary: str
-
-
-# -------------------------
-# Routes / Tools
+# MCP Tools
 # -------------------------
 
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
+@mcp.tool()
+def health():
+    """Health check tool"""
     return {"status": "ok"}
 
 
-@app.post("/check_emails", response_model=CheckEmailsResponse)
-async def check_emails(request: CheckEmailsRequest):
-    """Query Email entities in the ApertureData database."""
+@mcp.tool()
+def check_emails(limit: int = 10) -> dict:
+    """Query Email entities in ApertureData"""
     db = _connect_db()
-    limit = request.limit
-
     query = [
         {
             "FindEntity": {
@@ -78,11 +61,7 @@ async def check_emails(request: CheckEmailsRequest):
             }
         }
     ]
-
-    try:
-        response = db.query(query)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query failed: {e}")
+    response = db.query(query)
 
     emails = []
     if isinstance(response, tuple) and len(response) > 0:
@@ -96,22 +75,19 @@ async def check_emails(request: CheckEmailsRequest):
     spam = sum(1 for e in emails if e.get("is_spam"))
     unread = sum(1 for e in emails if e.get("is_unread"))
 
-    return CheckEmailsResponse(
-        status="ok",
-        total_emails=total,
-        spam_emails=spam,
-        unread_emails=unread,
-        samples=[e.get("subject", "N/A") for e in emails]
-    )
+    return {
+        "status": "ok",
+        "total_emails": total,
+        "spam_emails": spam,
+        "unread_emails": unread,
+        "samples": [e.get("subject", "N/A") for e in emails]
+    }
 
 
-@app.post("/summarize_emails", response_model=SummarizeEmailsResponse)
-async def summarize_emails(request: CheckEmailsRequest):
-    """Generate a natural language summary of emails using OpenAI >=1.0.0"""
+@mcp.tool()
+def summarize_emails(limit: int = 10) -> dict:
+    """Generate a natural language summary of emails using OpenAI"""
     db = _connect_db()
-    limit = request.limit
-
-    # Fetch emails
     query = [
         {
             "FindEntity": {
@@ -124,11 +100,7 @@ async def summarize_emails(request: CheckEmailsRequest):
         }
     ]
 
-    try:
-        response = db.query(query)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query failed: {e}")
-
+    response = db.query(query)
     emails = []
     if isinstance(response, tuple) and len(response) > 0:
         cmd = response[0][0].get("FindEntity", {})
@@ -138,9 +110,9 @@ async def summarize_emails(request: CheckEmailsRequest):
             emails.append(props)
 
     if not emails:
-        return SummarizeEmailsResponse(status="ok", summary="No emails found to summarize.")
+        return {"status": "ok", "summary": "No emails found to summarize."}
 
-    # Prepare text for the AI
+    # Prepare prompt
     email_texts = "\n".join([
         f"From: {e.get('sender', 'N/A')}, Subject: {e.get('subject', 'N/A')}, Spam: {e.get('is_spam', False)}, Unread: {e.get('is_unread', False)}"
         for e in emails
@@ -155,14 +127,14 @@ async def summarize_emails(request: CheckEmailsRequest):
         )
         summary_text = completion.choices[0].message.content.strip()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI summarization failed: {e}")
+        summary_text = f"Failed to generate summary: {e}"
 
-    return SummarizeEmailsResponse(status="ok", summary=summary_text)
+    return {"status": "ok", "summary": summary_text}
 
 
 # -------------------------
-# Run server
+# Run MCP server
 # -------------------------
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("mcp_fastapi:app", host="127.0.0.1", port=8000, reload=True)
+    # Run server over StreamableHttp transport
+    mcp.run(transport="sse")
