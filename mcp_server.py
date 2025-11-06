@@ -1,87 +1,147 @@
-# mcp_server.py
-from openai import OpenAI
-from io import BytesIO
+"""
+MCP Server built with FastMCP — queries Email entities in ApertureData and summarizes them with OpenAI.
+"""
+
 import os
+from dotenv import load_dotenv
+from aperturedb.CommonLibrary import create_connector
+from mcp.server.fastmcp import FastMCP
+from starlette.routing import Route
+from starlette.responses import JSONResponse
+import openai
 
-# ====== Initialize OpenAI client ======
-# You can also set OPENAI_API_KEY as an environment variable
-client = OpenAI(api_key="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")
+# -------------------------
+# Load env variables
+# -------------------------
+load_dotenv()
+APERTUREDB_KEY = os.getenv("APERTUREDB_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Validate
+if not APERTUREDB_KEY:
+    raise RuntimeError("⚠️ Missing APERTUREDB_KEY in .env or environment.")
+if not OPENAI_API_KEY:
+    raise RuntimeError("⚠️ Missing OPENAI_API_KEY in .env or environment.")
 
-# ====== Fake Call Class for Testing ======
-class FakeCall:
-    def __init__(self, call_id, audio_file):
-        self.id = call_id
-        self.audio_file = audio_file
+# Initialize OpenAI client
+client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-    def stream_audio(self):
-        # Yield audio chunks (here just one chunk from the file)
-        with open(self.audio_file, "rb") as f:
-            yield f.read()
+# -------------------------
+# Initialize MCP server
+# -------------------------
+class CustomFastMCP(FastMCP):
+    def http_app(self, mount_path: str = ""):
+        # Get the normal HTTP app used by streamable-http
+        app = super().http_app(mount_path)
+        # Add /health route
+        app.routes.append(
+            Route("/health", endpoint=lambda request: JSONResponse({"status": "ok"}), methods=["GET"])
+        )
+        return app
+    
+mcp = CustomFastMCP("commuter-assistant")
 
-    def play_audio(self, audio_bytes):
-        # Save TTS output locally
-        output_file = f"{self.id}_tts_output.wav"
-        with open(output_file, "wb") as f:
-            f.write(audio_bytes.getbuffer())
-        print(f"TTS audio saved as {output_file}")
+# -------------------------
+# Helper function
+# -------------------------
+def _connect_db():
+    return create_connector(key=APERTUREDB_KEY)
 
-
-# ====== Speech-to-Text ======
-def speech_to_text(audio_chunk):
-    temp_file = "temp_audio.m4a"
-    with open(temp_file, "wb") as f:
-        f.write(audio_chunk)
-
-    transcription = client.audio.transcriptions.create(
-        model="whisper-1",
-        file=open(temp_file, "rb")
-    )
-    os.remove(temp_file)
-    return transcription.text
-
-
-# ====== LLM Agent Logic ======
-def agent_logic(text_input):
-    if "email" in text_input.lower():
-        return "You have 3 unread emails."
-    elif "schedule" in text_input.lower():
-        return "I can schedule a meeting for you. When do you want it?"
-    else:
-        return "Sorry, I didn't understand that."
-
-
-# ====== Text-to-Speech ======
-def text_to_speech(text):
-    audio_resp = client.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="alloy",
-        input=text
-    )
-    # Convert HttpxBinaryResponseContent to bytes
-    audio_bytes = audio_resp.read()
-    return BytesIO(audio_bytes)
+# -------------------------
+# MCP Tools
+# -------------------------
 
 
-# ====== Call Handler ======
-def handle_incoming_call(call):
-    print("Incoming call:", call.id)
+@mcp.tool()
+def check_emails(limit: int = 10) -> dict:
+    """Query Email entities in ApertureData"""
+    db = _connect_db()
+    query = [
+        {
+            "FindEntity": {
+                "with_class": "Email",
+                "results": {
+                    "list": ["subject", "sender", "is_spam", "is_unread", "timestamp"]
+                },
+                "limit": limit
+            }
+        }
+    ]
+    response = db.query(query)
 
-    text_input = ""
-    for chunk in call.stream_audio():
-        text_input += speech_to_text(chunk)
+    emails = []
+    if isinstance(response, tuple) and len(response) > 0:
+        cmd = response[0][0].get("FindEntity", {})
+        entities = cmd.get("entities", cmd.get("returned", []))
+        for e in entities:
+            props = {k: v for k, v in e.items() if not k.startswith("_")}
+            emails.append(props)
 
-    print("User said:", text_input)
+    total = len(emails)
+    spam = sum(1 for e in emails if e.get("is_spam"))
+    unread = sum(1 for e in emails if e.get("is_unread"))
 
-    ai_response = agent_logic(text_input)
-    print("AI response:", ai_response)
+    return {
+        "status": "ok",
+        "total_emails": total,
+        "spam_emails": spam,
+        "unread_emails": unread,
+        "samples": [e.get("subject", "N/A") for e in emails]
+    }
 
-    audio_response = text_to_speech(ai_response)
-    call.play_audio(audio_response)
+
+@mcp.tool()
+def summarize_emails(limit: int = 10) -> dict:
+    """Generate a natural language summary of emails using OpenAI"""
+    db = _connect_db()
+    query = [
+        {
+            "FindEntity": {
+                "with_class": "Email",
+                "results": {
+                    "list": ["subject", "sender", "is_spam", "is_unread"]
+                },
+                "limit": limit
+            }
+        }
+    ]
+
+    response = db.query(query)
+    emails = []
+    if isinstance(response, tuple) and len(response) > 0:
+        cmd = response[0][0].get("FindEntity", {})
+        entities = cmd.get("entities", cmd.get("returned", []))
+        for e in entities:
+            props = {k: v for k, v in e.items() if not k.startswith("_")}
+            emails.append(props)
+
+    if not emails:
+        return {"status": "ok", "summary": "No emails found to summarize."}
+
+    # Prepare prompt
+    email_texts = "\n".join([
+        f"From: {e.get('sender', 'N/A')}, Subject: {e.get('subject', 'N/A')}, Spam: {e.get('is_spam', False)}, Unread: {e.get('is_unread', False)}"
+        for e in emails
+    ])
+    prompt = f"Generate a concise summary of the following emails:\n\n{email_texts}\n\nInclude total emails, spam/unread info, and key subjects and senders."
+
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300
+        )
+        summary_text = completion.choices[0].message.content.strip()
+    except Exception as e:
+        summary_text = f"Failed to generate summary: {e}"
+
+    return {"status": "ok", "summary": summary_text}
 
 
-# ====== Main ======
+# -------------------------
+# Run MCP server
+# -------------------------
 if __name__ == "__main__":
-    # Replace with your test M4A file
-    fake_call = FakeCall("test-call-1", "test2.m4a")
-    handle_incoming_call(fake_call)
+    mcp.settings.port = 8080
+    mcp.settings.host = "127.0.0.1"
+    mcp.run(transport="sse")
