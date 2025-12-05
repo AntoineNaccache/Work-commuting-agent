@@ -12,10 +12,25 @@ ENV/
 # Environment variables
 .env
 .env.local
+
+# Local files and old implementations
 local/
+
+# Claude Code
+.claude/
+
 # Generated files
 sample_emails.json
 *.log
+
+# Audio files
+*.m4a
+*.wav
+*.mp3
+
+# Google OAuth credentials
+credentials.json
+token.json
 
 # IDE
 .vscode/

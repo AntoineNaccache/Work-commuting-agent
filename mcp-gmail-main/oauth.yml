@@ -1,0 +1,9 @@
+# oauth.yml
+on_http_request:
+  - actions:
+      - type: oauth
+        config:
+          provider: google    # change to github, microsoft, …
+          # auth_id: "my-login"   # optional cookie/URL namespace
+          # client_id: ""     # only if you bring your own OAuth
+          # client_secret: "" # only if you bring your own OAuth
