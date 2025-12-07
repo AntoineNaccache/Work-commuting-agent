@@ -32,6 +32,9 @@ sample_emails.json
 credentials.json
 token.json
 
+# MCP Bearer token for ngrok deployment
+.bearer_token
+
 # IDE
 .vscode/
 .idea/

@@ -26,7 +26,8 @@ from mcp_gmail.gmail import (
     search_messages,
 )
 from mcp_gmail.gmail import send_email as gmail_send_email
-from mcp_gmail.calendar import (
+from mcp_gmail.gcalendar import (
+    CALENDAR_SCOPES,
     get_calendar_service,
     list_calendars,
     get_upcoming_events,
@@ -36,12 +37,15 @@ from mcp_gmail.calendar import (
     delete_event,
 )
 
-# Initialize the Gmail service
+# Combine Gmail and Calendar scopes for single OAuth flow
+ALL_SCOPES = list(set(settings.scopes + CALENDAR_SCOPES))
+
+# Initialize the Gmail service with combined scopes
 service = get_gmail_service(
-    credentials_path=settings.credentials_path, token_path=settings.token_path, scopes=settings.scopes
+    credentials_path=settings.credentials_path, token_path=settings.token_path, scopes=ALL_SCOPES
 )
 
-# Initialize the Calendar service
+# Initialize the Calendar service (will reuse the same token with all scopes)
 calendar_service = get_calendar_service(
     credentials_path=settings.credentials_path, token_path=settings.token_path
 )
@@ -475,6 +479,38 @@ def get_emails(message_ids: list[str]) -> str:
             result += f"Error: {error}\n"
 
     return result
+
+
+@mcp.tool()
+def mark_as_spam(message_id: str) -> str:
+    """
+    Mark a message as spam and move it to the spam folder.
+
+    Args:
+        message_id: The Gmail message ID to mark as spam
+
+    Returns:
+        Confirmation message
+    """
+    # Get message details before marking as spam
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+    from_header = headers.get("From", "Unknown")
+
+    # Add SPAM label - Gmail automatically moves messages with SPAM label to spam folder
+    modify_message_labels(
+        service, user_id=settings.user_id, message_id=message_id, remove_labels=[], add_labels=["SPAM"]
+    )
+
+    return f"""
+Message marked as spam and moved to spam folder:
+ID: {message_id}
+From: {from_header}
+Subject: {subject}
+
+The message has been labeled as SPAM and moved to your spam folder.
+"""
 
 
 # ========================

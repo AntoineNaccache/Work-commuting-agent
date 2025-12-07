@@ -1,394 +1,190 @@
-# Deploying Gmail MCP Server with ngrok
+# Deployment Guide: MCP Server with Ngrok for Telnyx
 
-This guide explains how to deploy your Gmail MCP server securely using ngrok with API key authentication.
+This guide walks you through deploying the Gmail & Calendar MCP Server via ngrok for Telnyx AI Agent integration.
 
-## Quick Start
+## Prerequisites
 
-### 1. Install ngrok
+Before you begin, ensure you have:
 
-Download and install ngrok from [https://ngrok.com/download](https://ngrok.com/download)
+1. ✅ **Google Cloud Project** configured with Gmail & Calendar APIs
+2. ✅ **OAuth credentials** (`credentials.json`) in `mcp-gmail-main/` directory
+3. ✅ **OAuth token** (`token.json`) - run the server locally first to authenticate
+4. ✅ **Ngrok account** (free tier works fine)
+5. ✅ **Ngrok authtoken** configured
+
+## Step 1: Install Ngrok
+
+### Download and Install
+
+Visit [https://ngrok.com/download](https://ngrok.com/download) and download ngrok for your platform.
+
+**Windows:**
+```bash
+# Download from website and extract to PATH
+# Or use chocolatey:
+choco install ngrok
+```
+
+**macOS:**
+```bash
+brew install ngrok
+```
+
+**Linux:**
+```bash
+curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install ngrok
+```
+
+### Configure Authtoken
+
+1. Sign up at [https://dashboard.ngrok.com/signup](https://dashboard.ngrok.com/signup)
+2. Get your authtoken from [https://dashboard.ngrok.com/get-started/your-authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
+3. Configure it:
 
 ```bash
-# After downloading, authenticate ngrok with your account
-ngrok authtoken YOUR_AUTH_TOKEN
+ngrok config add-authtoken <your-authtoken>
 ```
 
-### 2. Set up environment
+## Step 2: Install Dependencies
 
 ```bash
-# Copy the example environment file
-cp .env.example .env
-
-# Generate a secure API key
-python -c 'import secrets; print(secrets.token_urlsafe(32))'
-
-# Edit .env and add your API key
-# On Windows: notepad .env
-# On Linux/Mac: nano .env
+cd mcp-gmail-main
+uv pip install pyngrok uvicorn
 ```
 
-### 3. Deploy
+## Step 3: Authenticate with Google (First Time Only)
+
+Before deploying, ensure you've authenticated with Google:
 
 ```bash
-# Install dependencies
-uv sync
-
-# Run the deployment script
-python deploy_ngrok.py
+uv run python -m mcp_gmail.server
 ```
 
-The script will:
-- ✅ Check for ngrok installation
-- ✅ Verify/create .env configuration
-- ✅ Start the secure MCP server
-- ✅ Create an ngrok tunnel
-- ✅ Display connection information
+This will:
+1. Open your browser for Google OAuth
+2. Ask you to grant Gmail & Calendar permissions
+3. Create `token.json` file
 
-## Architecture
+Press Ctrl+C to stop the server once authentication is complete.
 
-### Security Layers
+## Step 4: Deploy with Ngrok
 
-1. **API Key Authentication**: All requests (except `/health`) require an `X-API-Key` header
-2. **ngrok Tunnel**: Secure HTTPS tunnel to your local server
-3. **Gmail OAuth**: Standard OAuth 2.0 authentication with Google
-
-### Components
-
-```
-Client → ngrok (HTTPS) → API Key Middleware → MCP Server → Gmail API
-```
-
-## Configuration
-
-### Environment Variables
-
-Edit your `.env` file:
+Run the deployment script:
 
 ```bash
-# Required: Your API key (keep this secret!)
-MCP_GMAIL_API_KEY=your-secure-api-key-here
-
-# Server settings
-MCP_GMAIL_PORT=8090
-MCP_GMAIL_HOST=0.0.0.0  # Accept external connections
-
-# Gmail OAuth
-MCP_GMAIL_CREDENTIALS_PATH=credentials.json
-MCP_GMAIL_TOKEN_PATH=token.json
+uv run python deploy_ngrok.py
 ```
 
-### Generate a Secure API Key
+### Expected Output:
+
+```
+✓ Generated new bearer token and saved to .bearer_token
+✓ Creating secure MCP server wrapper...
+🚀 Starting ngrok tunnel on port 8090...
+✓ Ngrok tunnel established
+
+======================================================================
+🎉 MCP SERVER READY FOR TELNYX INTEGRATION
+======================================================================
+
+📡 Public URL (use this in Telnyx):
+   https://abc123.ngrok-free.app
+
+   Note: In Telnyx, use: https://abc123.ngrok-free.app/sse
+
+🔐 Bearer Token (use this as API Key in Telnyx):
+   Xy9zKj3mN8pQ2rT5vW...
+
+📋 Telnyx Configuration:
+   Name: Gmail Calendar MCP
+   Type: SSE
+   URL: https://abc123.ngrok-free.app/sse
+   API Key: Xy9zKj3mN8pQ2rT5vW...
+```
+
+**Important:** Keep this terminal window open while you configure Telnyx!
+
+## Step 5: Configure Telnyx AI Agent
+
+1. **Open Telnyx Dashboard** and navigate to your AI Agent configuration
+
+2. **Add MCP Server** - Click "Create MCP Server"
+
+3. **Fill in the Details:**
+   - **Name**: `Gmail Calendar MCP`
+   - **Type**: Select `SSE` (Server-Sent Events)
+   - **URL**: Paste the ngrok URL with `/sse` suffix (e.g., `https://abc123.ngrok-free.app/sse`)
+   - **API Key**: Click "+ Append integration secret" and paste the bearer token
+
+4. **Save and Test** - Telnyx will test the connection and list available MCP tools
+
+## Deployment Options
+
+### Local Only (No Ngrok)
+
+Test locally without exposing publicly:
 
 ```bash
-python -c 'import secrets; print(secrets.token_urlsafe(32))'
+uv run python deploy_ngrok.py --no-ngrok
 ```
 
-Example output: `xK9mP2vL8nQ5rT7wY4zA1bC6dE3fG0hJ9iK2lM5nO8pQ`
-
-## Manual Deployment
-
-If you prefer to deploy manually instead of using the automated script:
-
-### Step 1: Start the Secure Server
+### Custom Port
 
 ```bash
-# Load environment variables (or use python-dotenv)
-# Windows:
-set MCP_GMAIL_API_KEY=your-key-here
-
-# Linux/Mac:
-export MCP_GMAIL_API_KEY=your-key-here
-
-# Start the server
-uv run python mcp_gmail/secure_server.py
+uv run python deploy_ngrok.py --port 9000
 ```
 
-### Step 2: Start ngrok
+### Regenerate Bearer Token
 
-In a separate terminal:
+If token is compromised:
 
 ```bash
-ngrok http 8090
+uv run python deploy_ngrok.py --regenerate-token
 ```
-
-### Step 3: Get Your Public URL
-
-ngrok will display a URL like:
-```
-Forwarding    https://abc123.ngrok.io -> http://localhost:8090
-```
-
-## Using the Deployed Server
-
-### Health Check (No Authentication)
-
-```bash
-curl https://your-ngrok-url.ngrok.io/health
-```
-
-Expected response:
-```json
-{"status": "ok"}
-```
-
-### Authenticated Request
-
-```bash
-curl -H "X-API-Key: your-api-key-here" \
-     https://your-ngrok-url.ngrok.io/sse
-```
-
-### From Python Client
-
-```python
-import requests
-
-API_KEY = "your-api-key-here"
-BASE_URL = "https://your-ngrok-url.ngrok.io"
-
-headers = {
-    "X-API-Key": API_KEY,
-    "Content-Type": "application/json"
-}
-
-# Health check
-response = requests.get(f"{BASE_URL}/health")
-print(response.json())
-
-# MCP request (requires authentication)
-response = requests.post(
-    f"{BASE_URL}/sse",
-    headers=headers,
-    json={"method": "tools/list"}
-)
-print(response.json())
-```
-
-### From Claude Desktop
-
-Update your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "gmail-remote": {
-      "url": "https://your-ngrok-url.ngrok.io/sse",
-      "headers": {
-        "X-API-Key": "your-api-key-here"
-      },
-      "transport": "sse"
-    }
-  }
-}
-```
-
-## Monitoring
-
-### ngrok Dashboard
-
-Access the ngrok web interface at [http://127.0.0.1:4040](http://127.0.0.1:4040) to:
-- View all requests
-- Inspect request/response details
-- Replay requests
-- Monitor traffic
-
-### Server Logs
-
-The deployment script shows server logs in real-time. Watch for:
-- ✅ Successful authentication: `200` status codes
-- ❌ Failed authentication: `401` (missing key) or `403` (invalid key)
-- 📧 Gmail API calls
-
-## Security Best Practices
-
-### 1. Protect Your API Key
-
-- ✅ Never commit `.env` to git (it's in `.gitignore`)
-- ✅ Use environment variables in production
-- ✅ Rotate keys regularly
-- ✅ Use different keys for different environments
-
-### 2. Use ngrok Security Features
-
-For production, consider ngrok's paid features:
-- **Custom domains**: Use your own domain instead of random URLs
-- **IP whitelisting**: Restrict access to specific IPs
-- **OAuth**: Add OAuth layer on top of API key
-
-```bash
-# Example: ngrok with IP whitelisting
-ngrok http 8090 --cidr-allow 1.2.3.4/32
-```
-
-### 3. Monitor Access
-
-- Review ngrok dashboard regularly
-- Check for unusual request patterns
-- Set up alerts for failed authentication attempts
-
-### 4. Gmail API Quotas
-
-Be aware of Gmail API quotas:
-- 1 billion quota units per day
-- 250 quota units per user per second
-- Most operations cost 5-10 units
-
-Monitor usage at: [https://console.cloud.google.com/apis/api/gmail.googleapis.com/metrics](https://console.cloud.google.com/apis/api/gmail.googleapis.com/metrics)
 
 ## Troubleshooting
 
-### "Missing API key" Error
+### Ngrok Issues
 
-**Problem**: Requests return 401 error
-```json
-{"error": "Missing API key", "message": "Please provide API key in X-API-Key header"}
-```
+**Error: "ngrok not found"**
+- Install ngrok from https://ngrok.com/download
+- Configure authtoken: `ngrok config add-authtoken <your-token>`
 
-**Solution**: Add the `X-API-Key` header to your request:
+### Connection Issues
+
+**Telnyx can't connect:**
+1. Is the deployment script still running?
+2. Did you include `/sse` at the end of the URL?
+3. Did you select "SSE" type (not "HTTP")?
+4. Is the bearer token copied correctly?
+
+Test manually:
 ```bash
-curl -H "X-API-Key: your-key" https://your-url.ngrok.io/health
+curl -H "Authorization: Bearer your-token" https://your-url.ngrok-free.app/sse
 ```
 
-### "Invalid API key" Error
+### OAuth Issues
 
-**Problem**: Requests return 403 error
-```json
-{"error": "Invalid API key", "message": "The provided API key is invalid"}
-```
-
-**Solution**:
-1. Check your `.env` file for the correct API key
-2. Ensure the key matches exactly (no extra spaces)
-3. Restart the server after changing `.env`
-
-### ngrok Not Found
-
-**Problem**: `deploy_ngrok.py` fails with "ngrok is not installed"
-
-**Solution**:
-1. Download ngrok from [https://ngrok.com/download](https://ngrok.com/download)
-2. Extract and add to PATH
-3. Authenticate: `ngrok authtoken YOUR_TOKEN`
-
-### Server Won't Start
-
-**Problem**: Server fails to start or exits immediately
-
-**Solution**:
-1. Check that `credentials.json` exists
-2. Verify Gmail API is enabled in Google Cloud Console
-3. Check server logs for specific errors
-4. Ensure port 8090 is not already in use
-
-### Connection Refused
-
-**Problem**: Can't connect to ngrok URL
-
-**Solution**:
-1. Verify server is running (`http://localhost:8090/health`)
-2. Check ngrok is running (`http://127.0.0.1:4040`)
-3. Ensure `MCP_GMAIL_HOST=0.0.0.0` in `.env`
-4. Check firewall settings
-
-## Production Deployment
-
-For production use, consider:
-
-### 1. Use a Persistent ngrok Domain
-
+**"Token has been expired or revoked":**
 ```bash
-# With ngrok paid plan
-ngrok http 8090 --domain=your-domain.ngrok.app
+rm token.json
+uv run python -m mcp_gmail.server  # Re-authenticate
 ```
 
-### 2. Use a Process Manager
+## Security Best Practices
 
-Keep the server running with `systemd` or `supervisor`:
-
-```ini
-# /etc/systemd/system/mcp-gmail.service
-[Unit]
-Description=Gmail MCP Server
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/mcp-gmail-main
-Environment="MCP_GMAIL_API_KEY=your-key"
-ExecStart=/usr/bin/python3 mcp_gmail/secure_server.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 3. Use Docker
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY . .
-
-RUN pip install uv && uv sync
-
-ENV MCP_GMAIL_HOST=0.0.0.0
-ENV MCP_GMAIL_PORT=8090
-
-CMD ["uv", "run", "python", "mcp_gmail/secure_server.py"]
-```
-
-### 4. Use a Reverse Proxy
-
-For production, use nginx or Caddy instead of ngrok:
-
-```nginx
-# nginx configuration
-server {
-    listen 443 ssl;
-    server_name mcp.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8090;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-## Cost Considerations
-
-### ngrok Pricing
-
-- **Free**: 1 online endpoint, random URLs, 40 connections/min
-- **Personal ($8/mo)**: Custom domains, more endpoints
-- **Production**: Higher limits, SLA
-
-### Gmail API
-
-- Free tier is generous (1B quota units/day)
-- Typical email operations: 5-10 units each
-- Monitor at Google Cloud Console
+1. **Protect the Bearer Token** - Never commit `.bearer_token` file
+2. **Monitor Access** - Watch server logs for unexpected requests
+3. **Rotate Tokens** - Use `--regenerate-token` periodically
+4. **Use HTTPS Only** - Ngrok provides this by default
 
 ## Next Steps
 
-After deploying:
+Test through Telnyx:
+- "Check my unread emails"
+- "What's on my calendar today?"
+- "Find time to meet with John"
 
-1. ✅ Test the `/health` endpoint
-2. ✅ Test authenticated endpoints with your API key
-3. ✅ Connect from your client application
-4. ✅ Set up monitoring and logging
-5. ✅ Plan for production deployment if needed
-
-## Support
-
-If you encounter issues:
-
-1. Check server logs
-2. Review ngrok dashboard at `http://127.0.0.1:4040`
-3. Verify Gmail API quotas
-4. Test with curl/Postman before client integration
+Enjoy your voice-powered assistant! 🎉
