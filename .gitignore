@@ -45,3 +45,6 @@ token.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local documentation (not to be shared)
+.docs/

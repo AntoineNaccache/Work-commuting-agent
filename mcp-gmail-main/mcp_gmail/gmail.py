@@ -21,9 +21,7 @@ DEFAULT_USER_ID = "me"
 
 # Gmail API scopes
 GMAIL_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.modify",  # Allows reading, sending, and modifying (includes all below)
     "https://www.googleapis.com/auth/gmail.labels",
 ]
 

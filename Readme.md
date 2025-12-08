@@ -132,11 +132,34 @@ The deployment script will display:
 
 Keep the terminal running to maintain the tunnel!
 
+#### Integrate with Claude Desktop
+
+To use the MCP server directly in Claude Desktop for text-based interactions:
+
+1. **The configuration has been added** to your Claude Desktop config file at:
+   ```
+   C:\Users\33750\AppData\Roaming\Claude\claude_desktop_config.json
+   ```
+
+2. **Restart Claude Desktop** to load the MCP server
+
+3. **Verify the connection**:
+   - Open Claude Desktop
+   - Look for the MCP icon or tools indicator
+   - You should see 15 Gmail & Calendar tools available
+
+4. **Start using it**:
+   - "Check my unread emails"
+   - "What's on my calendar today?"
+   - "Schedule a meeting with [person] tomorrow at 2pm"
+
+The Claude Desktop integration uses stdio transport (local process), while Telnyx uses SSE transport (web-based). Both provide access to the same 15 tools.
+
 ### Using the MCP Server
 
 The MCP server exposes tools via the Model Context Protocol. Connect to it from:
-- **Claude Desktop** (MCP client)
-- **Telnyx AI Agent** (voice integration)
+- **Claude Desktop** (MCP client via stdio) - Local text-based interaction
+- **Telnyx AI Agent** (SSE transport) - Voice-based interaction during commute
 - **Custom applications** using MCP clients
 
 **Available MCP Tools:**

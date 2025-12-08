@@ -348,18 +348,21 @@ def mark_message_read(message_id: str) -> str:
     Returns:
         Confirmation message
     """
+    # Get message details before marking as read
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+    from_header = headers.get("From", "Unknown")
+
     # Remove the UNREAD label
-    result = modify_message_labels(
+    modify_message_labels(
         service, user_id=settings.user_id, message_id=message_id, remove_labels=["UNREAD"], add_labels=[]
     )
-
-    # Get message details to show what was modified
-    headers = get_headers_dict(result)
-    subject = headers.get("Subject", "No Subject")
 
     return f"""
 Message marked as read:
 ID: {message_id}
+From: {from_header}
 Subject: {subject}
 """
 
@@ -749,7 +752,14 @@ def suggest_meeting_from_email(
     return result
 
 
+def main():
+    """Entry point for Claude Desktop integration (stdio transport)."""
+    import asyncio
+    asyncio.run(mcp.run())
+
+
 if __name__ == "__main__":
+    # When run directly, use SSE transport for web-based access
     mcp.settings.port = 8090
     mcp.settings.host = "127.0.0.1"
     mcp.run(transport="sse")
