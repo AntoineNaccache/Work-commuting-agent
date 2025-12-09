@@ -15,10 +15,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp_gmail.config import settings
 from mcp_gmail.gmail import (
     create_draft,
+    get_attachments,
     get_gmail_service,
     get_headers_dict,
     get_labels,
     get_message,
+    get_pdf_attachments_text,
     get_thread,
     list_messages,
     modify_message_labels,
@@ -52,7 +54,23 @@ calendar_service = get_calendar_service(
 
 mcp = FastMCP(
     "Gmail & Calendar MCP Server",
-    instructions="Access and interact with Gmail and Google Calendar. You can get messages, threads, search emails, send or compose new messages, manage calendar events, and schedule meetings.",  # noqa: E501
+    instructions="""Access and interact with Gmail and Google Calendar. You can get messages, threads, search emails, send or compose new messages, manage calendar events, and schedule meetings.
+
+PDF ATTACHMENT SUPPORT:
+- Use search_emails_with_pdf_attachments() to find emails with PDFs (great for boarding passes!)
+- Use list_attachments() to see what files are attached to emails
+- Use extract_pdf_text() to read PDF boarding passes, tickets, invoices, and bills
+- The extract_flight_info() tool automatically checks PDFs for flight details
+
+BEST PRACTICES:
+1. ALWAYS read email content with get_emails() before taking actions (labeling, scheduling, etc.)
+2. Use search_flight_bookings() for finding flights instead of generic search terms
+3. When user says "look for emails with PDF attachments", use search_emails_with_pdf_attachments()
+4. Use extract_flight_info() to parse flight details (checks both email body and PDFs)
+5. For emails with attachments, use list_attachments() first, then extract_pdf_text() to read them
+6. The schedule_meeting() tool automatically checks for duplicates and past dates
+7. Use query_emails() with Gmail search syntax for complex searches (see tool documentation for examples)
+8. When searching, exclude promotional terms: -price -deal -sale -offer -newsletter""",  # noqa: E501
 )
 
 EMAIL_PREVIEW_LENGTH = 200
@@ -285,6 +303,7 @@ def search_emails(
 def query_emails(query: str, max_results: int = 10) -> str:
     """
     Search for emails using a raw Gmail query string.
+    This uses the same powerful search syntax as the Gmail search box.
 
     Args:
         query: Gmail search query (same syntax as Gmail search box)
@@ -292,6 +311,21 @@ def query_emails(query: str, max_results: int = 10) -> str:
 
     Returns:
         Formatted list of matching emails
+
+    Examples of powerful Gmail search queries:
+        - Find unread from specific sender: "from:john@example.com is:unread"
+        - Multiple senders: "from:(alice OR bob)"
+        - Date range: "after:2025/12/01 before:2025/12/31"
+        - Exclude terms: "meeting -cancelled"
+        - Has attachment: "has:attachment"
+        - Subject search: "subject:(invoice OR receipt)"
+        - Combine multiple: "from:airline (subject:booking OR subject:confirmation) -subject:price"
+
+    Common patterns for specific use cases:
+        - Flight bookings: "(booking OR reservation OR ticket) (flight OR airline) -price -deal"
+        - Job applications: "from:(@linkedin.com OR @indeed.com OR @glassdoor.com) (application OR interview)"
+        - Bills: "subject:(bill OR invoice OR statement) has:attachment"
+        - Calendar invites: "subject:invitation filename:ics"
     """
     messages = list_messages(service, user_id=settings.user_id, max_results=max_results, query=query)
 
@@ -379,14 +413,15 @@ def add_label_to_message(message_id: str, label_id: str) -> str:
     Returns:
         Confirmation message
     """
+    # Get message details before modifying to show what was modified
+    message = get_message(service, user_id=settings.user_id, message_id=message_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+
     # Add the specified label
-    result = modify_message_labels(
+    modify_message_labels(
         service, user_id=settings.user_id, message_id=message_id, remove_labels=[], add_labels=[label_id]
     )
-
-    # Get message details to show what was modified
-    headers = get_headers_dict(result)
-    subject = headers.get("Subject", "No Subject")
 
     # Get the label name for the confirmation message
     label_name = label_id
@@ -416,6 +451,11 @@ def remove_label_from_message(message_id: str, label_id: str) -> str:
     Returns:
         Confirmation message
     """
+    # Get message details before modifying to show what was modified
+    message = get_message(service, user_id=settings.user_id, message_id=message_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+
     # Get the label name before we remove it
     label_name = label_id
     labels = get_labels(service, user_id=settings.user_id)
@@ -425,13 +465,9 @@ def remove_label_from_message(message_id: str, label_id: str) -> str:
             break
 
     # Remove the specified label
-    result = modify_message_labels(
+    modify_message_labels(
         service, user_id=settings.user_id, message_id=message_id, remove_labels=[label_id], add_labels=[]
     )
-
-    # Get message details to show what was modified
-    headers = get_headers_dict(result)
-    subject = headers.get("Subject", "No Subject")
 
     return f"""
 Label removed from message:
@@ -445,6 +481,18 @@ Removed Label: {label_name} ({label_id})
 def get_emails(message_ids: list[str]) -> str:
     """
     Get the content of multiple email messages by their IDs.
+
+    ⚠️ IMPORTANT: Always use this tool to examine email content before taking actions like:
+    - Marking as spam or important
+    - Adding/removing labels
+    - Creating calendar events
+    - Making decisions based on email type
+
+    Reading the full email content helps avoid mistakes like:
+    - Confusing price tracking emails with actual flight bookings
+    - Marking non-job emails as job applications
+    - Scheduling events that have already occurred
+    - Creating duplicate calendar entries
 
     Args:
         message_ids: A list of Gmail message IDs
@@ -516,6 +564,473 @@ The message has been labeled as SPAM and moved to your spam folder.
 """
 
 
+@mcp.tool()
+def list_attachments(message_id: str) -> str:
+    """
+    List all attachments in an email message.
+    Useful for finding boarding passes, tickets, invoices, and other documents.
+
+    Args:
+        message_id: The Gmail message ID
+
+    Returns:
+        List of attachments with details (filename, type, size)
+    """
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+
+    attachments = get_attachments(message)
+
+    if not attachments:
+        return f"""
+No attachments found in message: {subject}
+Message ID: {message_id}
+"""
+
+    result = f"""
+Attachments in message: {subject}
+Message ID: {message_id}
+
+Found {len(attachments)} attachment(s):
+
+"""
+
+    for i, att in enumerate(attachments, 1):
+        size_kb = att['size'] / 1024
+        result += f"{i}. {att['filename']}\n"
+        result += f"   Type: {att['mimeType']}\n"
+        result += f"   Size: {size_kb:.1f} KB\n"
+        if att['mimeType'] == 'application/pdf':
+            result += f"   📄 PDF - Use extract_pdf_text() to read content\n"
+        result += "\n"
+
+    return result
+
+
+@mcp.tool()
+def extract_pdf_text(message_id: str, max_pdfs: int = 5) -> str:
+    """
+    Extract text content from PDF attachments in an email.
+    Perfect for reading boarding passes, flight tickets, invoices, receipts, and bills.
+
+    Args:
+        message_id: The Gmail message ID
+        max_pdfs: Maximum number of PDFs to process (default: 5)
+
+    Returns:
+        Extracted text from all PDF attachments
+
+    Use cases:
+        - Extract flight details from boarding passes
+        - Read invoice/bill information
+        - Parse ticket confirmations
+        - Extract booking confirmations from PDF attachments
+    """
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    subject = headers.get("Subject", "No Subject")
+
+    # Get all attachments first to show what's available
+    all_attachments = get_attachments(message)
+    pdf_attachments = [att for att in all_attachments if att['mimeType'] == 'application/pdf']
+
+    if not pdf_attachments:
+        return f"""
+No PDF attachments found in message: {subject}
+Message ID: {message_id}
+
+Available attachments: {len(all_attachments)}
+{chr(10).join(f"  - {att['filename']} ({att['mimeType']})" for att in all_attachments) if all_attachments else "  (none)"}
+
+Tip: Use list_attachments() to see all attachments in detail.
+"""
+
+    result = f"""
+PDF Text Extraction
+━━━━━━━━━━━━━━━━━━━
+Message: {subject}
+Message ID: {message_id}
+PDFs found: {len(pdf_attachments)}
+
+"""
+
+    # Extract text from PDFs
+    pdf_texts = get_pdf_attachments_text(service, message, user_id=settings.user_id, max_pdfs=max_pdfs)
+
+    if "error" in pdf_texts:
+        return f"Error: {pdf_texts['error']}\n\nPlease install pypdf: pip install pypdf"
+
+    for filename, text in pdf_texts.items():
+        result += f"\n{'═' * 60}\n"
+        result += f"📄 {filename}\n"
+        result += f"{'═' * 60}\n\n"
+
+        if text.startswith("Error"):
+            result += f"⚠️  {text}\n"
+        else:
+            # Limit text length for display
+            max_chars = 5000
+            if len(text) > max_chars:
+                result += text[:max_chars]
+                result += f"\n\n... [Text truncated - {len(text) - max_chars} more characters]\n"
+            else:
+                result += text
+
+        result += "\n"
+
+    result += f"\n{'─' * 60}\n"
+    result += "Next steps:\n"
+    result += "- Use extract_flight_info() to parse flight details from the text\n"
+    result += "- Use schedule_meeting() to add events to calendar\n"
+    result += "- Copy important information for your records\n"
+
+    return result
+
+
+@mcp.tool()
+def extract_flight_info(message_id: str, include_pdf_attachments: bool = True) -> str:
+    """
+    Extract flight information from an email message.
+    This tool parses email content AND PDF attachments to find flight details like dates, times, airports, airlines, etc.
+
+    Args:
+        message_id: The Gmail message ID
+        include_pdf_attachments: Also check PDF attachments for flight info (default: True)
+
+    Returns:
+        Extracted flight information in a structured format
+
+    Note: PDF attachments often contain boarding passes and tickets with detailed flight information.
+    """
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    body = parse_message_body(message)
+    subject = headers.get("Subject", "")
+
+    # Common patterns for flight information
+    patterns = {
+        # Date patterns: Dec 11, 2025 or 12/11/2025 or December 11, 2025
+        'dates': r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:,\s*\d{4})?|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',
+        # Time patterns: 10:35 AM, 1:25 PM, 17:30
+        'times': r'\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?',
+        # Airport codes: SFO, CDG, JFK (3 letters, uppercase)
+        'airports': r'\b[A-Z]{3}\b',
+        # Flight numbers: AF84, UA123
+        'flight_numbers': r'\b[A-Z]{2}\s*\d{2,4}\b',
+        # Airlines
+        'airlines': r'(?:Air\s+France|United|Delta|American|British\s+Airways|Lufthansa|Emirates|Qatar|Singapore|TAP|Aeromexico|French\s+bee|Spirit)',
+        # Booking references
+        'booking_ref': r'(?:booking|confirmation|reference)(?:\s+(?:number|code|ref))?[:\s]+([A-Z0-9]{5,8})',
+    }
+
+    results = {
+        'subject': subject,
+        'dates': [],
+        'times': [],
+        'airports': [],
+        'flight_numbers': [],
+        'airlines': [],
+        'booking_references': [],
+    }
+
+    # Start with subject and body
+    search_text = f"{subject}\n{body}"
+    sources = ["Email body"]
+
+    # Also check PDF attachments if requested
+    pdf_text = ""
+    if include_pdf_attachments:
+        pdf_texts = get_pdf_attachments_text(service, message, user_id=settings.user_id, max_pdfs=3)
+        if pdf_texts and "error" not in pdf_texts:
+            pdf_text = "\n\n".join(pdf_texts.values())
+            search_text += f"\n\n{pdf_text}"
+            sources.append(f"PDF attachments ({len(pdf_texts)} file(s))")
+        elif pdf_texts and "error" in pdf_texts:
+            # Note the PDF library issue but continue with email body
+            sources.append("PDF attachments (unavailable)")
+
+    # Search for patterns in all text
+
+    for key, pattern in patterns.items():
+        matches = re.findall(pattern, search_text, re.IGNORECASE)
+        if matches:
+            if key == 'booking_ref':
+                # Extract just the reference code
+                results['booking_references'] = list(set(matches))
+            else:
+                # Remove duplicates and sort
+                results[key] = sorted(list(set(matches)))
+
+    # Try to identify route from airports
+    route = ""
+    if len(results['airports']) >= 2:
+        route = f"{results['airports'][0]} → {results['airports'][1]}"
+        if len(results['airports']) > 2:
+            route += f" (via {', '.join(results['airports'][2:])})"
+
+    # Format output
+    output = f"""
+Flight Information Extraction
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Subject: {subject}
+Sources checked: {', '.join(sources)}
+
+"""
+
+    if route:
+        output += f"Route: {route}\n\n"
+
+    if results['airlines']:
+        output += f"Airlines: {', '.join(results['airlines'])}\n\n"
+
+    if results['flight_numbers']:
+        output += f"Flight Numbers: {', '.join(results['flight_numbers'])}\n\n"
+
+    if results['dates']:
+        output += f"Dates Found:\n"
+        for date in results['dates'][:5]:  # Limit to first 5
+            output += f"  • {date}\n"
+        output += "\n"
+
+    if results['times']:
+        output += f"Times Found:\n"
+        for time in results['times'][:5]:  # Limit to first 5
+            output += f"  • {time}\n"
+        output += "\n"
+
+    if results['booking_references']:
+        output += f"Booking References: {', '.join(results['booking_references'])}\n\n"
+
+    if results['airports']:
+        output += f"Airports: {', '.join(results['airports'])}\n\n"
+
+    # Add recommendation
+    output += """
+Recommendation:
+━━━━━━━━━━━━━━━
+To schedule this flight as a calendar event, use the 'schedule_meeting' tool with:
+- The extracted dates and times
+- The route as the title or location
+- Flight number and airline in the description
+"""
+
+    return output
+
+
+@mcp.tool()
+def search_emails_with_pdf_attachments(
+    subject_keywords: Optional[str] = None,
+    from_email: Optional[str] = None,
+    after_date: Optional[str] = None,
+    max_results: int = 20,
+) -> str:
+    """
+    Search for emails that contain PDF attachments.
+    Useful for finding boarding passes, tickets, invoices, and bills that are typically sent as PDFs.
+
+    Args:
+        subject_keywords: Keywords to search in subject (optional, e.g., "flight OR boarding OR ticket")
+        from_email: Filter by sender email (optional)
+        after_date: Filter for emails after this date in YYYY/MM/DD format (optional)
+        max_results: Maximum number of results to return (default: 20)
+
+    Returns:
+        List of emails with PDF attachments and their details
+
+    Examples:
+        - Find all emails with PDFs: search_emails_with_pdf_attachments()
+        - Find flight PDFs: search_emails_with_pdf_attachments(subject_keywords="flight OR boarding OR ticket")
+        - Find recent invoices: search_emails_with_pdf_attachments(subject_keywords="invoice", after_date="2025/11/01")
+
+    Pro tip: This is especially useful when the user says "look for emails with PDF attachments"
+    """
+    # Build Gmail search query that finds emails with PDF attachments
+    # Gmail search uses filename:pdf to find PDF attachments
+    query_parts = ['filename:pdf']
+
+    if subject_keywords:
+        query_parts.append(f'subject:({subject_keywords})')
+
+    if from_email:
+        query_parts.append(f'from:{from_email}')
+
+    if after_date:
+        if not validate_date_format(after_date):
+            return f"Error: after_date '{after_date}' is not in the required format YYYY/MM/DD"
+        query_parts.append(f'after:{after_date}')
+
+    query = ' '.join(query_parts)
+
+    # Execute search
+    messages = list_messages(service, user_id=settings.user_id, max_results=max_results, query=query)
+
+    result = f"Found {len(messages)} email(s) with PDF attachments:\n"
+    result += f"Search query: {query}\n\n"
+
+    if not messages:
+        result += """
+No emails with PDF attachments found matching criteria.
+
+Tips:
+- Try without keyword filters to see all PDFs
+- Check the date range
+- Some PDFs might be named differently
+"""
+        return result
+
+    # Process each message
+    for msg_info in messages:
+        msg_id = msg_info.get("id")
+        message = get_message(service, msg_id, user_id=settings.user_id)
+        headers = get_headers_dict(message)
+
+        from_header = headers.get("From", "Unknown")
+        subject = headers.get("Subject", "No Subject")
+        date = headers.get("Date", "Unknown Date")
+
+        # Get PDF attachments
+        attachments = get_attachments(message)
+        pdf_attachments = [att for att in attachments if att['mimeType'] == 'application/pdf']
+
+        result += f"{'─' * 60}\n"
+        result += f"Message ID: {msg_id}\n"
+        result += f"From: {from_header}\n"
+        result += f"Subject: {subject}\n"
+        result += f"Date: {date}\n"
+        result += f"PDF Attachments: {len(pdf_attachments)}\n"
+
+        for pdf in pdf_attachments[:3]:  # Show first 3 PDFs
+            size_kb = pdf['size'] / 1024
+            result += f"  📄 {pdf['filename']} ({size_kb:.1f} KB)\n"
+
+        result += "\n"
+
+    result += f"{'─' * 60}\n"
+    result += f"\nNext steps:\n"
+    result += f"1. Use list_attachments(message_id) to see all attachments in detail\n"
+    result += f"2. Use extract_pdf_text(message_id) to read PDF content\n"
+    result += f"3. Use extract_flight_info(message_id) to parse flight details from PDFs\n"
+
+    return result
+
+
+@mcp.tool()
+def search_flight_bookings(
+    departure_airport: Optional[str] = None,
+    arrival_airport: Optional[str] = None,
+    airline: Optional[str] = None,
+    only_upcoming: bool = True,
+    max_results: int = 20,
+) -> str:
+    """
+    Search specifically for flight booking confirmations and boarding passes.
+    This tool filters out price tracking emails and promotional content.
+    Searches both email content AND PDF attachments.
+
+    Args:
+        departure_airport: 3-letter airport code (e.g., "CDG", "SFO")
+        arrival_airport: 3-letter airport code
+        airline: Airline name (e.g., "Air France", "TAP")
+        only_upcoming: Only show future flights (default: True)
+        max_results: Maximum number of results to return
+
+    Returns:
+        List of flight booking confirmations with details
+
+    Examples:
+        - Search for all flight bookings: search_flight_bookings()
+        - Find Paris to SF flights: search_flight_bookings(departure_airport="CDG", arrival_airport="SFO")
+        - Find TAP bookings: search_flight_bookings(airline="TAP")
+
+    Tip: If you need flights with PDF boarding passes specifically, use:
+         search_emails_with_pdf_attachments(subject_keywords="flight OR boarding OR ticket")
+    """
+    # Build comprehensive search query for flight bookings
+    # Use Gmail search syntax to combine multiple terms
+    query_parts = []
+
+    # Look for booking-related terms (excluding price tracking)
+    booking_terms = [
+        '("booking confirmation" OR "ticket issued" OR "boarding pass" OR "flight confirmation")',
+        '(subject:("booking" OR "reservation" OR "réservation" OR "ticket" OR "boarding"))',
+        '-(subject:("price" OR "deal" OR "sale" OR "offer" OR "track" OR "newsletter"))',  # Exclude promotions
+    ]
+    query_parts.extend(booking_terms)
+
+    # Add airport filters if provided
+    if departure_airport:
+        query_parts.append(f'("{departure_airport}")')
+    if arrival_airport:
+        query_parts.append(f'("{arrival_airport}")')
+
+    # Add airline filter if provided
+    if airline:
+        query_parts.append(f'("{airline}")')
+
+    # Date filter for upcoming flights
+    if only_upcoming:
+        # Get current date in Gmail format
+        current_date = datetime.now().strftime("%Y/%m/%d")
+        query_parts.append(f'after:{current_date}')
+
+    # Combine query parts
+    query = ' '.join(query_parts)
+
+    # Execute search
+    messages = list_messages(service, user_id=settings.user_id, max_results=max_results, query=query)
+
+    result = f"Found {len(messages)} flight booking(s):\n"
+    result += f"Search query: {query}\n\n"
+
+    if not messages:
+        result += """
+No flight bookings found. Tips:
+- Try without airport/airline filters to see all bookings
+- Check if bookings are from different email addresses
+- Some airlines use different subject line formats
+- Try searching in different languages (e.g., French airlines may use "réservation")
+"""
+        return result
+
+    # Process each message and extract flight info
+    for msg_info in messages:
+        msg_id = msg_info.get("id")
+        message = get_message(service, msg_id, user_id=settings.user_id)
+        headers = get_headers_dict(message)
+        body = parse_message_body(message)
+
+        from_header = headers.get("From", "Unknown")
+        subject = headers.get("Subject", "No Subject")
+        date = headers.get("Date", "Unknown Date")
+
+        # Quick extraction of key details from body
+        airports = re.findall(r'\b[A-Z]{3}\b', subject + " " + body[:500])
+        flight_nums = re.findall(r'\b[A-Z]{2}\s*\d{2,4}\b', subject + " " + body[:500])
+
+        result += f"{'─' * 60}\n"
+        result += f"Message ID: {msg_id}\n"
+        result += f"From: {from_header}\n"
+        result += f"Subject: {subject}\n"
+        result += f"Date: {date}\n"
+
+        if airports:
+            result += f"Airports mentioned: {', '.join(set(airports[:5]))}\n"
+        if flight_nums:
+            result += f"Flight numbers: {', '.join(set(flight_nums[:3]))}\n"
+
+        result += "\n"
+
+    result += f"{'─' * 60}\n"
+    result += f"\nNext steps:\n"
+    result += f"1. Use extract_flight_info(message_id) to get detailed flight information\n"
+    result += f"2. Use get_emails([message_ids]) to read the full email content\n"
+    result += f"3. Use schedule_meeting() to add flights to your calendar\n"
+
+    return result
+
+
 # ========================
 # Calendar Tools
 # ========================
@@ -579,9 +1094,11 @@ def schedule_meeting(
     attendees: list[str],
     description: Optional[str] = None,
     location: Optional[str] = None,
+    check_for_duplicates: bool = True,
 ) -> str:
     """
     Schedule a new meeting/calendar event.
+    Automatically checks for duplicate events and warns about past dates.
 
     Args:
         title: Meeting title
@@ -590,17 +1107,95 @@ def schedule_meeting(
         attendees: List of attendee email addresses
         description: Meeting description (optional)
         location: Meeting location (optional)
+        check_for_duplicates: Check if similar event already exists (default: True)
 
     Returns:
-        Confirmation with event details
+        Confirmation with event details or warning about duplicates/past dates
     """
     try:
         start_time = datetime.fromisoformat(start_datetime.replace("Z", "+00:00"))
     except ValueError:
         return f"Error: Invalid datetime format '{start_datetime}'. Use ISO format like '2024-01-15T14:00:00'"
 
+    # Check if the event is in the past
+    now = datetime.now()
+    if start_time < now:
+        days_ago = (now - start_time).days
+        return f"""
+⚠️  Warning: This event is in the PAST!
+
+Event date: {start_time.strftime('%Y-%m-%d %H:%M')}
+Current date: {now.strftime('%Y-%m-%d %H:%M')}
+Days ago: {days_ago}
+
+This event has already occurred. Please verify:
+1. Is this the correct date?
+2. Did you mean to schedule a future occurrence?
+3. Are you trying to add a historical event to your calendar?
+
+If you want to proceed anyway, you can still create the event, but it won't be useful for future planning.
+"""
+
     end_time = start_time + timedelta(minutes=duration_minutes)
 
+    # Check for duplicate events if enabled
+    if check_for_duplicates:
+        # Search for events around the same time (±1 day)
+        time_min = start_time - timedelta(days=1)
+        time_max = start_time + timedelta(days=1)
+
+        existing_events = get_upcoming_events(
+            calendar_service,
+            calendar_id="primary",
+            max_results=50,
+            time_min=time_min,
+            time_max=time_max,
+        )
+
+        # Check for similar events
+        for event in existing_events:
+            event_title = event.get('summary', '')
+            event_start = event.get('start', {}).get('dateTime', '')
+            event_location = event.get('location', '')
+
+            # Check if similar title and location
+            title_similar = title.lower() in event_title.lower() or event_title.lower() in title.lower()
+            location_similar = False
+            if location and event_location:
+                location_similar = location.lower() in event_location.lower() or event_location.lower() in location.lower()
+
+            # If event start time is within 2 hours of requested time
+            if event_start:
+                try:
+                    existing_start = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+                    time_diff = abs((existing_start - start_time).total_seconds() / 3600)  # hours
+
+                    if time_diff < 2 and (title_similar or location_similar):
+                        return f"""
+⚠️  Potential duplicate event detected!
+
+Existing event:
+  Title: {event_title}
+  Start: {existing_start.strftime('%Y-%m-%d %H:%M')}
+  Location: {event_location}
+  Event ID: {event.get('id', 'N/A')}
+
+New event you're trying to create:
+  Title: {title}
+  Start: {start_time.strftime('%Y-%m-%d %H:%M')}
+  Location: {location or 'N/A'}
+
+These events appear to be the same or very similar. To avoid duplicates:
+1. Check your calendar using get_calendar_events()
+2. If this is a different event, proceed with a more specific title
+3. If you want to create it anyway, you can modify the title to be more distinct
+
+Would you like to proceed with creating this event anyway?
+"""
+                except Exception:
+                    pass
+
+    # Create the event
     event = create_event(
         calendar_service,
         summary=title,
@@ -611,7 +1206,7 @@ def schedule_meeting(
         attendees=attendees,
     )
 
-    result = f"Meeting scheduled successfully!\n\n"
+    result = f"✓ Meeting scheduled successfully!\n\n"
     result += f"Title: {title}\n"
     result += f"Start: {start_time.isoformat()}\n"
     result += f"End: {end_time.isoformat()}\n"

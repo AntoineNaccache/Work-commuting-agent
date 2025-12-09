@@ -187,6 +187,38 @@ Once running, you can connect to the MCP server using any MCP client or via Clau
 - `suggest_meeting_from_email` - Analyze an email and suggest meeting times based on availability
 - `list_all_calendars` - List all accessible calendars
 
+## Recent Improvements
+
+This MCP server has been continuously improved through **AI-driven conversation log analysis**. Key enhancements include:
+
+### Major Features Added
+- **PDF Support**: Read boarding passes, tickets, invoices from PDF attachments
+- **Flight Extraction**: Automatically parse flight details from emails and PDFs
+- **Smart Search**: Specialized tools for finding flight bookings and PDF attachments
+- **Duplicate Prevention**: Automatic detection of duplicate calendar events
+- **Past Date Validation**: Warnings before scheduling events in the past
+- **HTML Parsing**: Clean text extraction from HTML-only emails
+
+### New Tools
+- `search_flight_bookings()` - Find flight bookings, exclude price tracking emails
+- `search_emails_with_pdf_attachments()` - Find emails with PDF attachments
+- `list_attachments()` - Show all email attachments
+- `extract_pdf_text()` - Read PDF boarding passes, tickets, invoices
+- `extract_flight_info()` - Parse flight details from emails and PDFs
+
+### Improvement Process
+We use an innovative workflow where:
+1. **Real usage** is logged during MCP client sessions
+2. **AI analysis** (Claude Code) examines conversation logs
+3. **Issues identified** from user feedback and error patterns
+4. **Improvements implemented** automatically based on findings
+
+📖 **Learn More:**
+- [**Improvement Workflow**](MCP_IMPROVEMENT_WORKFLOW.md) - Detailed process documentation
+- [**Improvements Summary**](IMPROVEMENTS_SUMMARY.md) - Complete list of enhancements
+
+**Stats**: 3 log analyses → 8 issues fixed → 5 new tools → 3 enhanced tools → 500+ lines of improvements
+
 ## Environment Variables
 
 You can configure the server using environment variables:

@@ -3,16 +3,25 @@ This module provides utilities for authenticating with and using the Gmail API.
 """
 
 import base64
+import io
 import json
 import os
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource, build
+
+try:
+    from pypdf import PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 # Default settings
 DEFAULT_CREDENTIALS_PATH = "credentials.json"
@@ -167,9 +176,65 @@ def create_multipart_message(
     return {"raw": encoded_message}
 
 
+class HTMLToTextParser(HTMLParser):
+    """Simple HTML to text converter."""
+
+    def __init__(self):
+        super().__init__()
+        self.text = []
+        self.skip_tags = {'script', 'style', 'meta', 'link'}
+        self.current_tag = None
+
+    def handle_starttag(self, tag, attrs):
+        self.current_tag = tag
+
+    def handle_endtag(self, tag):
+        if tag in {'p', 'div', 'br', 'tr'}:
+            self.text.append('\n')
+        self.current_tag = None
+
+    def handle_data(self, data):
+        if self.current_tag not in self.skip_tags:
+            text = data.strip()
+            if text:
+                self.text.append(text + ' ')
+
+    def get_text(self):
+        return ''.join(self.text).strip()
+
+
+def strip_html(html: str) -> str:
+    """
+    Strip HTML tags and convert to plain text.
+
+    Args:
+        html: HTML content
+
+    Returns:
+        Plain text content
+    """
+    parser = HTMLToTextParser()
+    try:
+        parser.feed(html)
+        text = parser.get_text()
+        # Clean up excessive whitespace and newlines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        return text
+    except Exception:
+        # If parsing fails, try simple regex approach
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        return text.strip()
+
+
 def parse_message_body(message: Dict[str, Any]) -> str:
     """
     Parse the body of a Gmail message.
+    Prioritizes text/plain but falls back to converting text/html to plain text if needed.
 
     Args:
         message: The Gmail message object
@@ -189,14 +254,38 @@ def parse_message_body(message: Dict[str, Any]) -> str:
                 text += get_text_part(part["parts"])
         return text
 
+    # Helper function to find text/html parts
+    def get_html_part(parts):
+        html = ""
+        for part in parts:
+            if part["mimeType"] == "text/html":
+                if "data" in part["body"]:
+                    html += base64.urlsafe_b64decode(part["body"]["data"]).decode()
+            elif "parts" in part:
+                html += get_html_part(part["parts"])
+        return html
+
     # Check if the message is multipart
     if "parts" in message["payload"]:
-        return get_text_part(message["payload"]["parts"])
+        # Try to get plain text first
+        text = get_text_part(message["payload"]["parts"])
+        if text:
+            return text
+        # Fall back to HTML if no plain text
+        html = get_html_part(message["payload"]["parts"])
+        if html:
+            return strip_html(html)
+        return ""
     else:
         # Handle single part messages
         if "data" in message["payload"]["body"]:
             data = message["payload"]["body"]["data"]
-            return base64.urlsafe_b64decode(data).decode()
+            decoded = base64.urlsafe_b64decode(data).decode()
+            # Check if it's HTML and strip it
+            mime_type = message["payload"].get("mimeType", "")
+            if mime_type == "text/html":
+                return strip_html(decoded)
+            return decoded
         return ""
 
 
@@ -662,3 +751,164 @@ def get_message_history(
         .list(userId=user_id, startHistoryId=history_id, maxResults=max_results)
         .execute()
     )
+
+
+# ========================
+# PDF Attachment Functions
+# ========================
+
+
+def get_attachments(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extract attachment information from a Gmail message.
+
+    Args:
+        message: The Gmail message object
+
+    Returns:
+        List of attachment info dictionaries with keys: filename, mimeType, attachmentId, size
+    """
+    attachments = []
+
+    def extract_attachments(parts):
+        for part in parts:
+            if part.get("filename"):
+                attachment_info = {
+                    "filename": part["filename"],
+                    "mimeType": part.get("mimeType", ""),
+                    "attachmentId": part["body"].get("attachmentId", ""),
+                    "size": part["body"].get("size", 0),
+                }
+                attachments.append(attachment_info)
+            # Recursively check nested parts
+            if "parts" in part:
+                extract_attachments(part["parts"])
+
+    # Check if message has parts
+    if "parts" in message["payload"]:
+        extract_attachments(message["payload"]["parts"])
+
+    return attachments
+
+
+def download_attachment(
+    service: GmailService,
+    message_id: str,
+    attachment_id: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> bytes:
+    """
+    Download an attachment from a Gmail message.
+
+    Args:
+        service: Gmail API service instance
+        message_id: Message ID
+        attachment_id: Attachment ID
+        user_id: Gmail user ID (default: 'me')
+
+    Returns:
+        Attachment data as bytes
+    """
+    attachment = (
+        service.users()
+        .messages()
+        .attachments()
+        .get(userId=user_id, messageId=message_id, id=attachment_id)
+        .execute()
+    )
+
+    data = attachment["data"]
+    return base64.urlsafe_b64decode(data)
+
+
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    """
+    Extract text content from PDF bytes.
+
+    Args:
+        pdf_bytes: PDF file as bytes
+
+    Returns:
+        Extracted text content
+
+    Raises:
+        ImportError: If pypdf is not installed
+        Exception: If PDF parsing fails
+    """
+    if not PDF_AVAILABLE:
+        raise ImportError(
+            "pypdf library is required for PDF parsing. Install with: pip install pypdf"
+        )
+
+    try:
+        # Create a PDF reader from bytes
+        pdf_file = io.BytesIO(pdf_bytes)
+        reader = PdfReader(pdf_file)
+
+        # Extract text from all pages
+        text_content = []
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text.strip():
+                text_content.append(f"--- Page {page_num + 1} ---\n{text}")
+
+        full_text = "\n\n".join(text_content)
+
+        # Clean up excessive whitespace
+        full_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        full_text = re.sub(r' {2,}', ' ', full_text)
+
+        return full_text.strip()
+
+    except Exception as e:
+        raise Exception(f"Failed to extract text from PDF: {str(e)}")
+
+
+def get_pdf_attachments_text(
+    service: GmailService,
+    message: Dict[str, Any],
+    user_id: str = DEFAULT_USER_ID,
+    max_pdfs: int = 5,
+) -> Dict[str, str]:
+    """
+    Get text content from all PDF attachments in a message.
+
+    Args:
+        service: Gmail API service instance
+        message: The Gmail message object
+        user_id: Gmail user ID (default: 'me')
+        max_pdfs: Maximum number of PDFs to process (default: 5)
+
+    Returns:
+        Dictionary mapping filename to extracted text content
+    """
+    if not PDF_AVAILABLE:
+        return {"error": "pypdf library not installed. Install with: pip install pypdf"}
+
+    pdf_texts = {}
+    message_id = message["id"]
+
+    # Get all attachments
+    attachments = get_attachments(message)
+
+    # Filter for PDF attachments
+    pdf_attachments = [
+        att for att in attachments
+        if att["mimeType"] == "application/pdf"
+    ][:max_pdfs]
+
+    # Download and extract text from each PDF
+    for attachment in pdf_attachments:
+        try:
+            pdf_bytes = download_attachment(
+                service,
+                message_id,
+                attachment["attachmentId"],
+                user_id
+            )
+            text = extract_text_from_pdf(pdf_bytes)
+            pdf_texts[attachment["filename"]] = text
+        except Exception as e:
+            pdf_texts[attachment["filename"]] = f"Error extracting PDF: {str(e)}"
+
+    return pdf_texts
