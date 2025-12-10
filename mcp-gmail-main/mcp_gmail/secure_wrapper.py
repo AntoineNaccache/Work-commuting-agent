@@ -11,6 +11,28 @@ from starlette.responses import Response, JSONResponse
 from starlette.routing import Route
 
 
+class NgrokHostFixMiddleware(BaseHTTPMiddleware):
+    """Middleware to fix ngrok host validation issues."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Fix the Host header for ngrok tunnels to pass MCP's transport security validation
+        # The MCP library validates the Host header, but ngrok uses random subdomains
+        # We'll set it to localhost to pass validation
+        if request.headers.get("host", "").endswith(".ngrok-free.app") or \
+           request.headers.get("host", "").endswith(".ngrok-free.dev") or \
+           request.headers.get("host", "").endswith(".ngrok.io"):
+            # Create a mutable copy of the headers
+            headers = dict(request.headers)
+            headers["host"] = f"localhost:{request.url.port or 8090}"
+            # Update the request scope
+            request._headers = headers
+            request.scope["headers"] = [
+                (k.encode(), v.encode()) for k, v in headers.items()
+            ]
+
+        return await call_next(request)
+
+
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     """Middleware to verify Bearer token on all requests except /health."""
 
@@ -72,6 +94,10 @@ def create_secure_app(mcp_sse_app, bearer_token: str):
 
     # Add health check route
     mcp_sse_app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+
+    # Add ngrok host fix middleware FIRST (before authentication)
+    # This fixes the Host header validation issue with ngrok tunnels
+    mcp_sse_app.add_middleware(NgrokHostFixMiddleware)
 
     # Add authentication middleware
     mcp_sse_app.add_middleware(BearerTokenMiddleware, bearer_token=bearer_token)

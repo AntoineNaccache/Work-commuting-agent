@@ -1,6 +1,7 @@
 # Credentials and tokens (SECURITY CRITICAL)
 credentials.json
 token.json
+.bearer_token
 *.key
 *.pem
 *.env

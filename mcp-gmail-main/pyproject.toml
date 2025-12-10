@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Jeremy Jordan", email = "no-reply@example.com" }]
 dependencies = [
-    "mcp[cli]>=0.6.0",
+    "mcp[cli]>=1.20.0",
     "google-auth>=2.27.0",
     "google-auth-oauthlib>=1.1.0",
     "google-api-python-client>=2.116.0",
