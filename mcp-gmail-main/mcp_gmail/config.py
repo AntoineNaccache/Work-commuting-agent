@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     user_id: str = DEFAULT_USER_ID
     max_results: int = 10
 
+    # Sandbox settings
+    e2b_api_key: Optional[str] = None
+    sandbox_timeout: int = 30
+    enable_screenshots: bool = False
+
     # Configure environment variable settings
     model_config = SettingsConfigDict(
         env_prefix="MCP_GMAIL_",

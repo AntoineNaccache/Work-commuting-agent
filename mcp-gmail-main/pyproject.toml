@@ -20,6 +20,10 @@ dependencies = [
     "pyngrok>=7.0.0",
     "uvicorn>=0.27.0",
     "pypdf>=4.0.0",
+    "e2b>=0.17.0",
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+    "validators>=0.22.0",
 ]
 
 [project.scripts]

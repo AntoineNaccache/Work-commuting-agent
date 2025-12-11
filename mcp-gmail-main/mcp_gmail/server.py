@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_gmail.config import settings
 from mcp_gmail.gmail import (
     create_draft,
+    download_attachment,
     get_attachments,
     get_gmail_service,
     get_headers_dict,
@@ -38,6 +39,12 @@ from mcp_gmail.gcalendar import (
     update_event,
     delete_event,
 )
+from mcp_gmail.sandbox_service import (
+    SandboxBrowser,
+    SandboxFileViewer,
+    extract_urls_from_email,
+    format_safety_report,
+)
 
 # Combine Gmail and Calendar scopes for single OAuth flow
 ALL_SCOPES = list(set(settings.scopes + CALENDAR_SCOPES))
@@ -52,9 +59,30 @@ calendar_service = get_calendar_service(
     credentials_path=settings.credentials_path, token_path=settings.token_path
 )
 
+# Initialize sandbox service (optional - only if E2B_API_KEY is set)
+sandbox_browser = None
+sandbox_file_viewer = None
+sandbox_enabled = False
+
+try:
+    if settings.e2b_api_key:
+        sandbox_browser = SandboxBrowser(api_key=settings.e2b_api_key, timeout=settings.sandbox_timeout)
+        sandbox_file_viewer = SandboxFileViewer(api_key=settings.e2b_api_key, timeout=settings.sandbox_timeout)
+        sandbox_enabled = True
+except Exception as e:
+    print(f"Warning: Sandbox service not available: {e}")
+    sandbox_enabled = False
+
 mcp = FastMCP(
     "Gmail & Calendar MCP Server",
     instructions="""Access and interact with Gmail and Google Calendar. You can get messages, threads, search emails, send or compose new messages, manage calendar events, and schedule meetings.
+
+SANDBOX SECURITY FEATURES:
+- Use scan_email_for_threats(message_id) to comprehensively scan emails for malicious links and dangerous files
+- Use preview_link_safely(url) to open and analyze suspicious links in a secure sandbox
+- Use preview_file_safely(message_id, filename) to safely preview email attachments
+- Use extract_email_links(message_id) to list all URLs in an email before scanning
+- All sandbox tools require E2B_API_KEY to be configured (get free key from https://e2b.dev)
 
 PDF ATTACHMENT SUPPORT:
 - Use search_emails_with_pdf_attachments() to find emails with PDFs (great for boarding passes!)
@@ -1029,6 +1057,457 @@ No flight bookings found. Tips:
     result += f"3. Use schedule_meeting() to add flights to your calendar\n"
 
     return result
+
+
+# ========================
+# Sandbox Security Tools
+# ========================
+
+
+@mcp.tool()
+def extract_email_links(message_id: str) -> str:
+    """
+    Extract all URLs from an email message.
+    Useful for identifying links before scanning them for threats.
+
+    Args:
+        message_id: The Gmail message ID
+
+    Returns:
+        List of all URLs found in the email
+    """
+    message = get_message(service, message_id, user_id=settings.user_id)
+    headers = get_headers_dict(message)
+    body = parse_message_body(message)
+    subject = headers.get("Subject", "No Subject")
+
+    # Extract URLs from email body
+    urls = extract_urls_from_email(body)
+
+    if not urls:
+        return f"""
+No URLs found in message: {subject}
+Message ID: {message_id}
+
+This email does not contain any clickable links.
+"""
+
+    result = f"""
+🔗 URLs Found in Email: {subject}
+Message ID: {message_id}
+
+Found {len(urls)} URL(s):
+
+"""
+
+    for i, url in enumerate(urls, 1):
+        result += f"{i}. {url}\n"
+
+    result += f"""
+Next steps:
+- Use preview_link_safely(url) to safely open and analyze each link
+- Use scan_email_for_threats(message_id) to scan all links and attachments
+"""
+
+    return result
+
+
+@mcp.tool()
+def preview_link_safely(url: str, take_screenshot: bool = False) -> str:
+    """
+    Safely open and analyze a URL in a sandboxed browser environment.
+    This tool opens the URL in an isolated E2B cloud sandbox, analyzes its content,
+    checks for phishing patterns, and returns a safety assessment.
+
+    Args:
+        url: The URL to preview
+        take_screenshot: Whether to capture a screenshot (default: False)
+
+    Returns:
+        Detailed safety report with content summary and threat assessment
+
+    Note: Requires E2B_API_KEY to be set in environment variables.
+          Get your free API key from https://e2b.dev
+    """
+    if not sandbox_enabled or not sandbox_browser:
+        return """
+❌ Sandbox service not available
+
+The sandbox service requires an E2B API key to be configured.
+
+Setup instructions:
+1. Get a free API key from https://e2b.dev
+2. Set environment variable: E2B_API_KEY=your_key_here
+   (or MCP_GMAIL_E2B_API_KEY=your_key_here)
+3. Restart the MCP server
+
+The sandbox service allows you to safely preview links from emails
+without compromising your system.
+"""
+
+    try:
+        # Open URL in sandbox
+        result = sandbox_browser.open_url(url, take_screenshot=take_screenshot)
+
+        # Format the report
+        report = format_safety_report(
+            url=url,
+            score=result['safety_score'],
+            warnings=result['warnings'],
+            content=result.get('content', ''),
+            metadata={
+                'Title': result.get('title', 'N/A'),
+                'SSL Valid': '✅ Yes' if result['ssl_valid'] else '❌ No',
+                'Status': '✅ Loaded successfully' if result['success'] else '❌ Failed to load'
+            }
+        )
+
+        # Add screenshot info if available
+        if result.get('screenshot'):
+            report += "\n\n📸 Screenshot captured (base64 encoded)\n"
+
+        # Add error details if any
+        if result.get('error'):
+            report += f"\n\n⚠️  Error details: {result['error']}\n"
+
+        return report
+
+    except Exception as e:
+        return f"""
+❌ Error previewing link
+
+URL: {url}
+Error: {str(e)}
+
+This could be due to:
+- Invalid URL format
+- Network connectivity issues
+- Sandbox timeout (URL took too long to load)
+- E2B API rate limits
+
+Please try again or check the URL manually in a safe environment.
+"""
+
+
+@mcp.tool()
+def preview_file_safely(message_id: str, filename: str) -> str:
+    """
+    Safely open and analyze an email attachment in a sandboxed environment.
+    This tool downloads the attachment, analyzes it in isolation, checks for
+    threats, and returns a safety assessment with content preview.
+
+    Args:
+        message_id: The Gmail message ID containing the attachment
+        filename: The name of the attachment to preview
+
+    Returns:
+        Detailed safety report with file analysis and content summary
+
+    Note: Requires E2B_API_KEY to be set in environment variables.
+          Get your free API key from https://e2b.dev
+    """
+    if not sandbox_enabled or not sandbox_file_viewer:
+        return """
+❌ Sandbox service not available
+
+The sandbox service requires an E2B API key to be configured.
+
+Setup instructions:
+1. Get a free API key from https://e2b.dev
+2. Set environment variable: E2B_API_KEY=your_key_here
+   (or MCP_GMAIL_E2B_API_KEY=your_key_here)
+3. Restart the MCP server
+
+The sandbox service allows you to safely preview file attachments from emails
+without compromising your system.
+"""
+
+    try:
+        # Get the message and attachments
+        message = get_message(service, message_id, user_id=settings.user_id)
+        headers = get_headers_dict(message)
+        subject = headers.get("Subject", "No Subject")
+        attachments = get_attachments(message)
+
+        # Find the specified attachment
+        target_attachment = None
+        for att in attachments:
+            if att['filename'] == filename:
+                target_attachment = att
+                break
+
+        if not target_attachment:
+            available = "\n".join([f"  - {att['filename']}" for att in attachments])
+            return f"""
+❌ Attachment not found
+
+Filename: {filename}
+Message: {subject}
+Message ID: {message_id}
+
+Available attachments:
+{available if attachments else '  (none)'}
+
+Use list_attachments(message_id) to see all attachments with details.
+"""
+
+        # Download the attachment
+        file_bytes = download_attachment(
+            service,
+            message_id,
+            target_attachment['attachmentId'],
+            user_id=settings.user_id
+        )
+
+        # Analyze in sandbox
+        result = sandbox_file_viewer.open_file(
+            file_bytes,
+            filename,
+            target_attachment['mimeType']
+        )
+
+        # Format the report
+        report = format_safety_report(
+            filename=filename,
+            score=result['safety_score'],
+            warnings=result['warnings'],
+            content=result.get('content', ''),
+            metadata={
+                'File Type': result.get('file_type', 'Unknown'),
+                'MIME Type': result['mime_type'],
+                'Size': f"{result['size'] / 1024:.1f} KB",
+                'From Email': subject
+            }
+        )
+
+        # Add error details if any
+        if result.get('error'):
+            report += f"\n\n⚠️  Analysis error: {result['error']}\n"
+
+        return report
+
+    except Exception as e:
+        return f"""
+❌ Error previewing file
+
+Filename: {filename}
+Message ID: {message_id}
+Error: {str(e)}
+
+This could be due to:
+- Attachment download failed
+- Unsupported file type
+- File analysis error
+- Sandbox timeout
+
+Please try again or use list_attachments() to verify the filename.
+"""
+
+
+@mcp.tool()
+def scan_email_for_threats(message_id: str) -> str:
+    """
+    Comprehensively scan an email for security threats including malicious links
+    and dangerous attachments. This tool analyzes all URLs and files in the email,
+    providing a complete threat assessment.
+
+    This is the recommended tool for checking if an email is safe before
+    clicking links or opening attachments.
+
+    Args:
+        message_id: The Gmail message ID to scan
+
+    Returns:
+        Comprehensive threat report with overall risk assessment
+
+    Note: Requires E2B_API_KEY to be set in environment variables.
+          Get your free API key from https://e2b.dev
+    """
+    if not sandbox_enabled:
+        return """
+❌ Sandbox service not available
+
+The sandbox service requires an E2B API key to be configured.
+
+Setup instructions:
+1. Get a free API key from https://e2b.dev
+2. Set environment variable: E2B_API_KEY=your_key_here
+   (or MCP_GMAIL_E2B_API_KEY=your_key_here)
+3. Restart the MCP server
+"""
+
+    try:
+        # Get email message
+        message = get_message(service, message_id, user_id=settings.user_id)
+        headers = get_headers_dict(message)
+        body = parse_message_body(message)
+        subject = headers.get("Subject", "No Subject")
+        from_header = headers.get("From", "Unknown")
+
+        # Extract URLs
+        urls = extract_urls_from_email(body)
+
+        # Get attachments
+        attachments = get_attachments(message)
+
+        # Initialize results
+        link_results = []
+        file_results = []
+        overall_score = 100
+        threat_count = 0
+
+        # Scan each URL (limit to first 5 to avoid excessive API calls)
+        for url in urls[:5]:
+            try:
+                result = sandbox_browser.open_url(url, take_screenshot=False)
+                link_results.append({
+                    'url': url,
+                    'score': result['safety_score'],
+                    'warnings': result['warnings'],
+                    'title': result.get('title', 'N/A')
+                })
+                if result['safety_score'] < 70:
+                    threat_count += 1
+                overall_score = min(overall_score, result['safety_score'])
+            except Exception as e:
+                link_results.append({
+                    'url': url,
+                    'score': 50,
+                    'warnings': [f'Scan error: {str(e)}'],
+                    'title': 'Error'
+                })
+
+        # Scan each attachment (limit to first 5)
+        for att in attachments[:5]:
+            try:
+                file_bytes = download_attachment(
+                    service,
+                    message_id,
+                    att['attachmentId'],
+                    user_id=settings.user_id
+                )
+                result = sandbox_file_viewer.open_file(
+                    file_bytes,
+                    att['filename'],
+                    att['mimeType']
+                )
+                file_results.append({
+                    'filename': att['filename'],
+                    'score': result['safety_score'],
+                    'warnings': result['warnings'],
+                    'file_type': result.get('file_type', 'Unknown')
+                })
+                if result['safety_score'] < 70:
+                    threat_count += 1
+                overall_score = min(overall_score, result['safety_score'])
+            except Exception as e:
+                file_results.append({
+                    'filename': att['filename'],
+                    'score': 50,
+                    'warnings': [f'Scan error: {str(e)}'],
+                    'file_type': 'Error'
+                })
+
+        # Build report
+        if overall_score >= 70:
+            risk_emoji = '✅'
+            risk_level = 'LOW'
+        elif overall_score >= 40:
+            risk_emoji = '⚠️ '
+            risk_level = 'MEDIUM'
+        else:
+            risk_emoji = '❌'
+            risk_level = 'HIGH'
+
+        report = f"""
+🔍 Email Threat Scan Complete
+
+Subject: {subject}
+From: {from_header}
+Message ID: {message_id}
+
+Overall Risk: {risk_emoji} {risk_level} (Score: {overall_score}/100)
+Threats Detected: {threat_count}
+
+{'=' * 60}
+
+"""
+
+        # Report on links
+        if link_results:
+            report += f"🔗 Links Found: {len(link_results)}\n\n"
+            for i, link in enumerate(link_results, 1):
+                score = link['score']
+                if score >= 70:
+                    emoji = '✅'
+                    status = 'Safe'
+                elif score >= 40:
+                    emoji = '⚠️ '
+                    status = 'Suspicious'
+                else:
+                    emoji = '❌'
+                    status = 'DANGEROUS'
+
+                report += f"{i}. {emoji} {link['url'][:60]}...\n"
+                report += f"   Score: {score}/100 ({status})\n"
+                if link['warnings']:
+                    for warning in link['warnings'][:3]:  # Show top 3 warnings
+                        report += f"   - {warning}\n"
+                report += "\n"
+        else:
+            report += "🔗 Links Found: 0\n\n"
+
+        # Report on attachments
+        if file_results:
+            report += f"📎 Attachments Found: {len(file_results)}\n\n"
+            for i, file in enumerate(file_results, 1):
+                score = file['score']
+                if score >= 70:
+                    emoji = '✅'
+                    status = 'Safe'
+                elif score >= 40:
+                    emoji = '⚠️ '
+                    status = 'Suspicious'
+                else:
+                    emoji = '❌'
+                    status = 'DANGEROUS'
+
+                report += f"{i}. {emoji} {file['filename']}\n"
+                report += f"   Score: {score}/100 ({status})\n"
+                report += f"   Type: {file['file_type']}\n"
+                if file['warnings']:
+                    for warning in file['warnings'][:3]:  # Show top 3 warnings
+                        report += f"   - {warning}\n"
+                report += "\n"
+        else:
+            report += "📎 Attachments Found: 0\n\n"
+
+        # Final recommendation
+        report += f"{'=' * 60}\n\n"
+        report += "📋 Recommendation:\n"
+        if overall_score >= 70:
+            report += "✅ This email appears safe. No significant threats detected.\n"
+        elif overall_score >= 40:
+            report += "⚠️  Exercise caution. Review warnings before clicking links or opening files.\n"
+        else:
+            report += "❌ DANGER: This email contains high-risk content. DO NOT click links or open attachments.\n"
+
+        return report
+
+    except Exception as e:
+        return f"""
+❌ Error scanning email
+
+Message ID: {message_id}
+Error: {str(e)}
+
+This could be due to:
+- Invalid message ID
+- Network connectivity issues
+- Sandbox service error
+
+Please try again or check individual links/files manually.
+"""
 
 
 # ========================
